@@ -1,0 +1,3 @@
+# fuzz caches and local scratch
+/testdata/fuzz/
+*.log
