@@ -25,6 +25,7 @@ ssl_key_file = '$certs/server.key'
 CONF
 # the admin needs no password; tls sessions must use scram, so channel binding is on offer; plain ones take md5,
 # which a scram-hashed password still answers with scram
+# test cluster only
 cat > "$dir/data/pg_hba.conf" <<HBA
 host      all pgt_admin 127.0.0.1/32 trust
 host      all pgt_admin ::1/128      trust
@@ -50,5 +51,5 @@ ALTER DATABASE pg_test SET TimeZone = 'Australia/Perth';
 SQL
 PG_TEST_URL="postgres://pgt_scram:scram-pass@127.0.0.1:$port/pg_test?sslmode=disable" \
 PG_TEST_MD5_URL="postgres://pgt_md5:md5-pass@127.0.0.1:$port/pg_test?sslmode=disable" \
-PG_TEST_TLS_URL="postgres://pgt_scram:scram-pass@localhost:$port/pg_test?sslmode=verify-full&sslrootcert=$certs/ca.crt" \
+PG_TEST_TLS_DEFAULT_URL="postgres://pgt_scram:scram-pass@localhost:$port/pg_test?sslrootcert=$certs/ca.crt" PG_TEST_TLS_URL="postgres://pgt_scram:scram-pass@localhost:$port/pg_test?sslmode=verify-full&sslrootcert=$certs/ca.crt" \
   go test -count=1 -run Integration ${PG_TEST_FLAGS:-} ./...

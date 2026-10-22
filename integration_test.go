@@ -389,3 +389,14 @@ func TestIntegrationATLSSessionChecksTheHostItDialed(t *testing.T) {
 		t.Fatalf("got %v, not a host name failure", err)
 	}
 }
+
+func TestIntegrationASessionWithNoSslmodeIsEncrypted(t *testing.T) {
+	c := testConn(t, "PG_TEST_TLS_DEFAULT_URL")
+	res, err := c.Query(context.Background(), "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.Rows[0][0]); got != "t" {
+		t.Errorf("the session isn't encrypted: ssl=%s", got)
+	}
+}

@@ -42,9 +42,10 @@ func handshake(ctx context.Context, nc net.Conn, cfg Config) (*tls.Conn, error) 
 	default:
 		return nil, errors.New("pg: the server answered the tls request with something else")
 	}
-	tc := tls.Client(nc, &tls.Config{ServerName: cfg.Host, RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12})
+	tc := tls.Client(nc, &tls.Config{ServerName: cfg.Host, RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"postgresql"}})
 	if err := tc.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("pg: tls: %w", err)
+		return nil, fmt.Errorf("pg: %w", err)
 	}
 	return tc, nil
 }

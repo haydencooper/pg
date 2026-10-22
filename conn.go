@@ -80,13 +80,18 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pg: %w", err)
 	}
-	if cfg.mode() == TLSVerifyFull {
+	switch cfg.mode() {
+	case TLSOff:
+	case TLSVerifyFull:
 		tc, err := secure(ctx, nc, cfg)
 		if err != nil {
 			nc.Close()
 			return nil, err
 		}
 		nc = tc
+	default:
+		nc.Close()
+		return nil, errUnknownTLS
 	}
 	return startup(ctx, nc, cfg)
 }

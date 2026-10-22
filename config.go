@@ -52,6 +52,35 @@ func (m TLSMode) String() string {
 	return "default"
 }
 
+// MarshalText writes off or verify-full, and nothing for the default
+func (m TLSMode) MarshalText() ([]byte, error) {
+	switch m {
+	case TLSDefault:
+		return []byte{}, nil
+	case TLSOff:
+		return []byte("off"), nil
+	case TLSVerifyFull:
+		return []byte("verify-full"), nil
+	}
+	return nil, errUnknownTLS
+}
+
+func (m *TLSMode) UnmarshalText(b []byte) error {
+	switch string(b) {
+	case "":
+		*m = TLSDefault
+	case "off":
+		*m = TLSOff
+	case "verify-full":
+		*m = TLSVerifyFull
+	default:
+		return errUnknownTLS
+	}
+	return nil
+}
+
+var errUnknownTLS = errors.New("pg: the config's tls mode isn't one this client knows")
+
 // ParseURL reads postgres://user:password@host:port/database. the query may carry host (a socket directory),
 // application_name, sslmode=disable or verify-full, and sslrootcert, a pem file of authorities. an error never
 // repeats any part of the url: a password with an unescaped ? would spill into the query
@@ -77,6 +106,9 @@ func ParseURL(s string) (Config, error) {
 	}
 	q := u.Query()
 	for k := range q {
+		if len(q[k]) > 1 {
+			return Config{}, fmt.Errorf("pg: the database url sets %s twice", k)
+		}
 		switch v := q.Get(k); k {
 		case "host":
 			c.Host = v
@@ -105,6 +137,9 @@ func ParseURL(s string) (Config, error) {
 			return Config{}, errors.New("pg: the database url may set only host, application_name, sslmode and sslrootcert")
 		}
 	}
+	if c.TLS == TLSOff && c.RootCAs != nil {
+		return Config{}, errors.New("pg: the database url's sslrootcert means nothing with sslmode=disable")
+	}
 	if c.User == "" {
 		return Config{}, errors.New("pg: the database url names no user")
 	}
@@ -123,8 +158,16 @@ func ParseURL(s string) (Config, error) {
 // check refuses a nul in a startup value: it would end the value early, and the server would read the rest as more
 // settings
 func (c Config) check() error {
+	switch c.TLS {
+	case TLSDefault, TLSOff, TLSVerifyFull:
+	default:
+		return errUnknownTLS
+	}
 	if c.mode() == TLSVerifyFull && c.unix() {
 		return errors.New("pg: tls over a unix socket isn't spoken; a socket's session needs sslmode=disable")
+	}
+	if c.mode() == TLSVerifyFull && c.Host == "" {
+		return errors.New("pg: a session with tls needs a host to check the certificate against")
 	}
 	for _, v := range []string{c.User, c.Password, c.Database, c.AppName} {
 		if strings.IndexByte(v, 0) >= 0 {
