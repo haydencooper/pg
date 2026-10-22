@@ -121,7 +121,7 @@ func trustStartup(s *fakeServer) {
 
 func TestStartupSendsTheSessionSettingsAndTrustNeedsNoPassword(t *testing.T) {
 	var startupBody []byte
-	c, err := pipe(t, Config{User: "iris", Database: "stats", AppName: "iris"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats", AppName: "app"}, func(s *fakeServer) {
 		_, startupBody = s.read(true)
 		s.send(authOK(), backend('S', cstr("server_version"), cstr("16.4")), ready('I'))
 		s.read(false)
@@ -130,7 +130,7 @@ func TestStartupSendsTheSessionSettingsAndTrustNeedsNoPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	for _, want := range []string{"user\x00iris\x00", "database\x00stats\x00", "application_name\x00iris\x00", "TimeZone\x00UTC\x00",
+	for _, want := range []string{"user\x00app\x00", "database\x00stats\x00", "application_name\x00app\x00", "TimeZone\x00UTC\x00",
 		"client_encoding\x00UTF8\x00", "DateStyle\x00ISO, MDY\x00", "extra_float_digits\x003\x00", "bytea_output\x00hex\x00"} {
 		if !strings.Contains(string(startupBody), want) {
 			t.Errorf("startup lacks %q", want)
@@ -143,7 +143,7 @@ func TestStartupSendsTheSessionSettingsAndTrustNeedsNoPassword(t *testing.T) {
 
 func TestMd5AnswersWithTheSaltedHash(t *testing.T) {
 	var answer []byte
-	c, err := pipe(t, Config{User: "iris", Password: "secret", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Password: "secret", Database: "stats"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(backend('R', []byte{0, 0, 0, 5, 1, 2, 3, 4}))
 		_, answer = s.read(false)
@@ -154,13 +154,13 @@ func TestMd5AnswersWithTheSaltedHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close()
-	if string(answer) != md5Password("iris", "secret", []byte{1, 2, 3, 4})+"\x00" {
+	if string(answer) != md5Password("app", "secret", []byte{1, 2, 3, 4})+"\x00" {
 		t.Errorf("%q", answer)
 	}
 }
 
 func TestACleartextPasswordRequestIsRefused(t *testing.T) {
-	_, err := pipe(t, Config{User: "iris", Password: "secret", Database: "stats"}, func(s *fakeServer) {
+	_, err := pipe(t, Config{User: "app", Password: "secret", Database: "stats"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(backend('R', []byte{0, 0, 0, 3}))
 	})
@@ -170,7 +170,7 @@ func TestACleartextPasswordRequestIsRefused(t *testing.T) {
 }
 
 func TestAScramServerThatSkipsItsSignatureIsRefused(t *testing.T) {
-	_, err := pipe(t, Config{User: "iris", Password: "secret", Database: "stats"}, func(s *fakeServer) {
+	_, err := pipe(t, Config{User: "app", Password: "secret", Database: "stats"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(backend('R', []byte{0, 0, 0, 10}, cstr("SCRAM-SHA-256"), []byte{0}))
 		s.read(false)
@@ -182,7 +182,7 @@ func TestAScramServerThatSkipsItsSignatureIsRefused(t *testing.T) {
 }
 
 func TestAStartupErrorIsTheServersError(t *testing.T) {
-	_, err := pipe(t, Config{User: "iris", Database: "nope"}, func(s *fakeServer) {
+	_, err := pipe(t, Config{User: "app", Database: "nope"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(backend('E', cstr("SFATAL"), cstr("C3D000"), cstr("Mdatabase \"nope\" does not exist"), []byte{0}))
 	})
@@ -193,7 +193,7 @@ func TestAStartupErrorIsTheServersError(t *testing.T) {
 }
 
 func TestAQueryReturnsItsColumnsRowsAndTag(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		for i := 0; i < 5; i++ {
 			s.read(false)
@@ -227,7 +227,7 @@ func TestAQueryReturnsItsColumnsRowsAndTag(t *testing.T) {
 
 // an error ends the statement, but the server goes on to its sync, and the session stays good
 func TestAQueryErrorLeavesTheSessionUsable(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		for i := 0; i < 5; i++ {
 			s.read(false)
@@ -254,8 +254,8 @@ func TestAQueryErrorLeavesTheSessionUsable(t *testing.T) {
 }
 
 func TestANotificationDuringAQueryIsKeptForWait(t *testing.T) {
-	note := append(append([]byte{0, 0, 0, 42}, cstr("iris_jobs")...), cstr("7")...)
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	note := append(append([]byte{0, 0, 0, 42}, cstr("app_jobs")...), cstr("7")...)
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.read(false)
 		s.send(backend('A', note), backend('C', cstr("LISTEN")), ready('I'))
@@ -265,18 +265,18 @@ func TestANotificationDuringAQueryIsKeptForWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := c.Script(context.Background(), "LISTEN iris_jobs"); err != nil {
+	if err := c.Script(context.Background(), "LISTEN app_jobs"); err != nil {
 		t.Fatal(err)
 	}
 	n, err := c.Wait(context.Background())
-	if err != nil || n.Channel != "iris_jobs" || n.Payload != "7" || n.PID != 42 {
+	if err != nil || n.Channel != "app_jobs" || n.Payload != "7" || n.PID != 42 {
 		t.Fatalf("%+v %v", n, err)
 	}
 }
 
 // a wait that times out before any message arrives leaves the session good for the next call
 func TestAWaitThatTimesOutKeepsTheSession(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.read(false)
 		s.send(backend('C', cstr("SELECT 1")), ready('I'))
@@ -298,8 +298,8 @@ func TestAWaitThatTimesOutKeepsTheSession(t *testing.T) {
 
 // a wait whose ctx has ended already reads nothing, not even a notification that's arrived, and leaves the session good
 func TestAWaitWhoseContextHasEndedLeavesTheSessionGood(t *testing.T) {
-	note := append(append([]byte{0, 0, 0, 42}, cstr("iris_jobs")...), cstr("7")...)
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	note := append(append([]byte{0, 0, 0, 42}, cstr("app_jobs")...), cstr("7")...)
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		// one write, so the notification is in hand when the script returns
@@ -318,7 +318,7 @@ func TestAWaitWhoseContextHasEndedLeavesTheSessionGood(t *testing.T) {
 	if n, err := c.Wait(ended); !errors.Is(err, context.Canceled) || !strings.HasPrefix(err.Error(), "pg: ") {
 		t.Fatalf("%+v %v", n, err)
 	}
-	if n, err := c.Wait(context.Background()); err != nil || n.Channel != "iris_jobs" || n.Payload != "7" {
+	if n, err := c.Wait(context.Background()); err != nil || n.Channel != "app_jobs" || n.Payload != "7" {
 		t.Fatalf("after: %+v %v", n, err)
 	}
 }
@@ -326,7 +326,7 @@ func TestAWaitWhoseContextHasEndedLeavesTheSessionGood(t *testing.T) {
 // a query cut off mid-answer leaves the session broken, and says so on every later call
 func TestACancelledQueryBreaksTheSession(t *testing.T) {
 	release := make(chan struct{})
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		for i := 0; i < 5; i++ {
 			s.read(false)
@@ -352,7 +352,7 @@ func TestACancelledQueryBreaksTheSession(t *testing.T) {
 
 func TestATransactionRollsBackWhenItsWorkFails(t *testing.T) {
 	var scripts []string
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		scripts = append(scripts, s.script())
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -395,7 +395,7 @@ func TestARollbackTagIsAnErrorUnlessTheCallAskedForIt(t *testing.T) {
 		{"an abort", false, "ABORT", []string{"ROLLBACK"}, 'I', false},
 		{"a rollback behind comments", false, "-- undo it\n/* a /* nested */ comment */ ROLLBACK", []string{"ROLLBACK"}, 'I', false},
 	} {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			s.script()
 			s.send(backend('E', cstr("SERROR"), cstr("VERROR"), cstr("C22012"), cstr("Mdivision by zero"), []byte{0}), ready('E'))
@@ -436,7 +436,7 @@ func TestARollbackTagIsAnErrorUnlessTheCallAskedForIt(t *testing.T) {
 // work that swallows a statement's error leaves the transaction failed, so Tx rolls it back and says so
 func TestATransactionWhoseStatementFailedRollsBack(t *testing.T) {
 	var scripts []string
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		scripts = append(scripts, s.script())
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -501,7 +501,7 @@ func TestATransactionWhoseWorkEndedItIsAnError(t *testing.T) {
 		}},
 	} {
 		next := make(chan byte, 1)
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			s.script()
 			s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -526,7 +526,7 @@ func TestATransactionWhoseWorkEndedItIsAnError(t *testing.T) {
 // after it
 func TestACommitThatGotNoAnswerHasAnUnknownOutcome(t *testing.T) {
 	var scripts []string
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		scripts = append(scripts, s.script())
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -549,7 +549,7 @@ func TestACommitThatGotNoAnswerHasAnUnknownOutcome(t *testing.T) {
 
 	ended, cancel := context.WithCancel(ctx)
 	defer cancel()
-	c, err = pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err = pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -581,7 +581,7 @@ func TestAServerThatHangsUpAfterAnErrorIsAnsweredWithIt(t *testing.T) {
 			return err
 		}},
 	} {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			for i := 0; i < call.reads; i++ {
 				s.read(false)
@@ -617,7 +617,7 @@ func TestAStatementErrorThenAHangUpIsAnsweredWithBoth(t *testing.T) {
 			return err
 		}},
 	} {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			for i := 0; i < call.reads; i++ {
 				s.read(false)
@@ -647,7 +647,7 @@ func TestAStatementErrorThenAHangUpIsAnsweredWithBoth(t *testing.T) {
 func TestAGarbledReadyStatusIsRefused(t *testing.T) {
 	garbled := map[string][]byte{"no status": {}, "an unknown status": {'X'}, "two statuses": {'I', 'T'}}
 	for name, body := range garbled {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			s.read(true)
 			s.send(append(authOK(), backend('Z', body)...))
 		})
@@ -669,7 +669,7 @@ func TestAGarbledReadyStatusIsRefused(t *testing.T) {
 				return err
 			}},
 		} {
-			c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+			c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 				trustStartup(s)
 				for i := 0; i < call.reads; i++ {
 					s.read(false)
@@ -693,7 +693,7 @@ func TestAGarbledReadyStatusIsRefused(t *testing.T) {
 // a backend key is the pid and the secret, 4 bytes each, under the protocol version this client asks for
 func TestABackendKeyThatIsntEightBytesRefusesTheConnect(t *testing.T) {
 	for name, key := range map[string][]byte{"a short key": {0, 0, 0, 9}, "a long key": make([]byte, 12)} {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			s.read(true)
 			s.send(append(append(authOK(), backend('K', key)...), ready('I')...))
 		})
@@ -707,7 +707,7 @@ func TestABackendKeyThatIsntEightBytesRefusesTheConnect(t *testing.T) {
 }
 
 func TestAnArgumentThatCantBeSentIsNamedByItsNumber(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.read(false)
 	})
@@ -722,7 +722,7 @@ func TestAnArgumentThatCantBeSentIsNamedByItsNumber(t *testing.T) {
 }
 
 func TestMoreArgumentsThanPostgresTakesAreRefused(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.read(false)
 	})
@@ -737,7 +737,7 @@ func TestMoreArgumentsThanPostgresTakesAreRefused(t *testing.T) {
 
 // a call whose ctx has already ended sends nothing, so an idle session stays good
 func TestACallWhoseContextHasEndedLeavesTheSessionGood(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		s.send(backend('C', cstr("SELECT 1")), ready('I'))
@@ -768,7 +768,7 @@ func TestATransactionRollsBackWhenItsContextEndsDuringTheWork(t *testing.T) {
 	boom := errors.New("boom")
 	for name, result := range map[string]error{"work that fails": boom, "work that succeeds": nil} {
 		var scripts []string
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			scripts = append(scripts, s.script())
 			s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -797,7 +797,7 @@ func TestATransactionRollsBackWhenItsContextEndsDuringTheWork(t *testing.T) {
 
 func TestATransactionCantBeginInsideAnother(t *testing.T) {
 	next := make(chan byte, 1)
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -824,7 +824,7 @@ func TestATransactionCantBeginInsideAnother(t *testing.T) {
 // a panic in the work rolls back, and the panic goes on
 func TestAPanicInTheWorkRollsBackAndGoesOn(t *testing.T) {
 	var scripts []string
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		scripts = append(scripts, s.script())
 		s.send(backend('C', cstr("BEGIN")), ready('T'))
@@ -850,20 +850,20 @@ func TestAPanicInTheWorkRollsBackAndGoesOn(t *testing.T) {
 }
 
 func TestASettingReportedAfterStartupIsKept(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
-		s.send(backend('C', cstr("SET")), backend('S', cstr("application_name"), cstr("iris serve")), ready('I'))
+		s.send(backend('C', cstr("SET")), backend('S', cstr("application_name"), cstr("app serve")), ready('I'))
 		s.read(false)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := c.Script(context.Background(), "SET application_name = 'iris serve'"); err != nil {
+	if err := c.Script(context.Background(), "SET application_name = 'app serve'"); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Param("application_name"); got != "iris serve" {
+	if got := c.Param("application_name"); got != "app serve" {
 		t.Errorf("%q", got)
 	}
 }
@@ -873,7 +873,7 @@ var otherSettings = map[string]string{"client_encoding": "SQL_ASCII", "DateStyle
 // values are written and read under the session's settings, so a server that reports others is refused
 func TestAServerReportingOtherSessionSettingsIsRefused(t *testing.T) {
 	for k, v := range otherSettings {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			s.read(true)
 			s.send(append(append(authOK(), backend('S', cstr(k), cstr(v))...), ready('I')...))
 		})
@@ -889,7 +889,7 @@ func TestAServerReportingOtherSessionSettingsIsRefused(t *testing.T) {
 // a statement that changes a setting values are read under, as SET TimeZone does, breaks the session
 func TestChangingASessionSettingBreaksTheSession(t *testing.T) {
 	for k, v := range otherSettings {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			s.script()
 			s.send(append(append(backend('C', cstr("SET")), backend('S', cstr(k), cstr(v))...), ready('I')...))
@@ -911,7 +911,7 @@ func TestChangingASessionSettingBreaksTheSession(t *testing.T) {
 // once scram has begun, a server can't switch to md5 to get a hash of the password instead
 func TestAServerCantSwitchFromScramToMd5Partway(t *testing.T) {
 	answered := make(chan bool, 1)
-	_, err := pipe(t, Config{User: "iris", Password: "secret", Database: "stats"}, func(s *fakeServer) {
+	_, err := pipe(t, Config{User: "app", Password: "secret", Database: "stats"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(backend('R', []byte{0, 0, 0, 10}, cstr("SCRAM-SHA-256"), []byte{0}))
 		s.read(false)
@@ -929,7 +929,7 @@ func TestAServerCantSwitchFromScramToMd5Partway(t *testing.T) {
 
 // a short authentication message is an error, not a zero that reads as ok
 func TestAShortAuthenticationMessageIsRefused(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Password: "secret", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Password: "secret", Database: "stats"}, func(s *fakeServer) {
 		s.read(true)
 		s.send(append(backend('R', []byte{0}), ready('I')...))
 	})
@@ -944,10 +944,10 @@ func TestANulByteInAStartupValueIsRefused(t *testing.T) {
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, cfg := range []Config{
-		{User: "iris\x00x", Database: "stats"},
-		{User: "iris", Database: "stats\x00x"},
-		{User: "iris", Password: "hunter2\x00x", Database: "stats"},
-		{User: "iris", Database: "stats", AppName: "iris\x00options\x00-c search_path=evil"},
+		{User: "app\x00x", Database: "stats"},
+		{User: "app", Database: "stats\x00x"},
+		{User: "app", Password: "hunter2\x00x", Database: "stats"},
+		{User: "app", Database: "stats", AppName: "app\x00options\x00-c search_path=evil"},
 	} {
 		cfg.Host, cfg.Port = "127.0.0.1", 5432
 		_, err := Connect(ended, cfg)
@@ -963,7 +963,7 @@ func TestANegativeCountOrSizeInARowBreaksTheSession(t *testing.T) {
 		"a row of -1 values":          backend('D', []byte{0xff, 0xff}),
 		"a value of -2 bytes":         backend('D', []byte{0, 1, 0xff, 0xff, 0xff, 0xfe}),
 	} {
-		c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+		c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 			trustStartup(s)
 			for i := 0; i < 5; i++ {
 				s.read(false)
@@ -984,7 +984,7 @@ func TestANegativeCountOrSizeInARowBreaksTheSession(t *testing.T) {
 }
 
 func TestCopyIsRefusedAndBreaksTheSession(t *testing.T) {
-	c, err := pipe(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		s.send(backend('G', []byte{0, 0, 0}))
@@ -1004,7 +1004,7 @@ func TestCopyIsRefusedAndBreaksTheSession(t *testing.T) {
 
 // closing never fails on a session that's broken or closed already
 func TestClosingABrokenOrClosedSessionIsQuiet(t *testing.T) {
-	broken, err := loopback(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	broken, err := loopback(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.script()
 		s.send(backend('v'))
@@ -1021,7 +1021,7 @@ func TestClosingABrokenOrClosedSessionIsQuiet(t *testing.T) {
 	if err := broken.Close(); err != nil {
 		t.Errorf("closing it again: %v", err)
 	}
-	good, err := loopback(t, Config{User: "iris", Database: "stats"}, func(s *fakeServer) {
+	good, err := loopback(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
 		trustStartup(s)
 		s.read(false)
 	})

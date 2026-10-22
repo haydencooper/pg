@@ -126,7 +126,7 @@ func TestIntegrationAFailedTransactionLeavesNothing(t *testing.T) {
 func TestIntegrationListenHearsNotify(t *testing.T) {
 	listener, sender := testConn(t, "PG_TEST_URL"), testConn(t, "PG_TEST_MD5_URL")
 	ctx := context.Background()
-	if err := listener.Script(ctx, "LISTEN iris_test"); err != nil {
+	if err := listener.Script(ctx, "LISTEN app_test"); err != nil {
 		t.Fatal(err)
 	}
 	quiet, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -134,13 +134,13 @@ func TestIntegrationListenHearsNotify(t *testing.T) {
 	if _, err := listener.Wait(quiet); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a quiet wait: %v", err)
 	}
-	if _, err := sender.Exec(ctx, "SELECT pg_notify('iris_test', $1)", "job 7"); err != nil {
+	if _, err := sender.Exec(ctx, "SELECT pg_notify('app_test', $1)", "job 7"); err != nil {
 		t.Fatal(err)
 	}
 	soon, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel2()
 	n, err := listener.Wait(soon)
-	if err != nil || n.Channel != "iris_test" || n.Payload != "job 7" {
+	if err != nil || n.Channel != "app_test" || n.Payload != "job 7" {
 		t.Fatalf("%+v %v", n, err)
 	}
 }

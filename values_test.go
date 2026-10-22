@@ -56,7 +56,7 @@ func TestAnArgumentPostgresCantHoldIsRefused(t *testing.T) {
 }
 
 func TestARowScansIntoGoValues(t *testing.T) {
-	row := Row{[]byte("iris"), []byte("42"), []byte("t"), []byte("1.25"), []byte(`\xdead`),
+	row := Row{[]byte("app"), []byte("42"), []byte("t"), []byte("1.25"), []byte(`\xdead`),
 		[]byte("2026-10-21 06:15:55.123456+00"), []byte(`{AK-47,"say \"hi\"",plain}`), nil, []byte("7")}
 	var (
 		name    string
@@ -72,7 +72,7 @@ func TestARowScansIntoGoValues(t *testing.T) {
 	if err := row.Scan(&name, &n, &ok, &f, &b, &at, &weapons, &missing, &present); err != nil {
 		t.Fatal(err)
 	}
-	if name != "iris" || n != 42 || !ok || f != 1.25 || string(b) != "\xde\xad" || missing != nil || present == nil || *present != 7 {
+	if name != "app" || n != 42 || !ok || f != 1.25 || string(b) != "\xde\xad" || missing != nil || present == nil || *present != 7 {
 		t.Errorf("%q %d %v %v %x %v %v", name, n, ok, f, b, missing, present)
 	}
 	if !at.Equal(time.Date(2026, 10, 21, 6, 15, 55, 123456000, time.UTC)) {

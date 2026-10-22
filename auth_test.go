@@ -66,8 +66,8 @@ func TestAPostgresScramNonceIsFreshAndItsUserEmpty(t *testing.T) {
 }
 
 func TestMd5IsTheHashOfTheHashWithTheSalt(t *testing.T) {
-	// md5(md5("secret" + "iris") + salt)
-	if got := md5Password("iris", "secret", []byte{1, 2, 3, 4}); got != "md5f1a30d224096025b75e75d8b727c28b2" {
+	// md5(md5("secret" + "app") + salt)
+	if got := md5Password("app", "secret", []byte{1, 2, 3, 4}); got != "md5911f527656472583a006e7727877b33e" {
 		t.Errorf("%s", got)
 	}
 }
