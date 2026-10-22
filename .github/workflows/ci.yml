@@ -45,6 +45,18 @@ jobs:
           go-version: "1.27.3"
       - name: fuzz the client's answers to a query
         run: go test . -run '^$' -fuzz '^FuzzServerAnswers$' -fuzztime 20s
+      - name: fuzz the answer to the tls request
+        run: go test . -run '^$' -fuzz '^FuzzTLSAnswer$' -fuzztime 20s
+      - name: fuzz the server's scram messages
+        run: go test . -run '^$' -fuzz '^FuzzScramServerMessages$' -fuzztime 20s
+      - name: fuzz the answers to a batch
+        run: go test . -run '^$' -fuzz '^FuzzBatchAnswers$' -fuzztime 20s
+      - name: fuzz failures
+        if: failure()
+        run: |
+          for f in testdata/fuzz/*/*; do
+            if [ -f "$f" ]; then echo "$f"; base64 -w0 "$f"; echo; fi
+          done
 
   pg:
     runs-on: ubuntu-24.04
