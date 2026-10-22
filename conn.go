@@ -59,6 +59,8 @@ var settings = [][2]string{{"client_encoding", "UTF8"}, {"DateStyle", "ISO, MDY"
 // ROLLBACK tag, not an error
 var ErrRolledBack = errors.New("pg: the transaction failed, so it rolled back")
 
+var errLeftOpen = errors.New("pg: the batch left a transaction open, so it was rolled back")
+
 // ErrCommitUnknown is a COMMIT that went out and got no answer, as when ctx ends or the session is cut while Tx waits
 // for one. the work may have been applied, so running it again could apply it twice
 var ErrCommitUnknown = errors.New("pg: the commit's outcome is unknown")

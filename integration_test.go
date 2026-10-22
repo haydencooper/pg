@@ -335,3 +335,26 @@ func TestIntegrationABatchThatLeavesATransactionOpenIsRolledBack(t *testing.T) {
 		t.Errorf("the tenant leaked: %q", got)
 	}
 }
+
+func TestIntegrationABatchThatOpensATransactionAndFailsIsRolledBack(t *testing.T) {
+	c := testConn(t, "PG_TEST_URL")
+	ctx := context.Background()
+	_, err := c.Batch(ctx,
+		Statement{SQL: "SELECT set_config('app.tenant', 'alpha', true)"},
+		Statement{SQL: "BEGIN"},
+		Statement{SQL: "SELECT 1/0"})
+	var be *BatchError
+	if !errors.As(err, &be) {
+		t.Fatalf("got %v, not a BatchError", err)
+	}
+	if c.TxStatus() != 'I' {
+		t.Errorf("the session was left in transaction state %c", c.TxStatus())
+	}
+	res, qerr := c.Query(ctx, "SELECT coalesce(current_setting('app.tenant', true), '')")
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
+	if got := string(res.Rows[0][0]); got != "" {
+		t.Errorf("the tenant leaked: %q", got)
+	}
+}

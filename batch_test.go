@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func columnsMsg(names ...string) []byte {
@@ -167,7 +168,7 @@ func TestAPortalSuspendedBreaksTheSession(t *testing.T) {
 	c, err := loopback(t, Config{User: "u"}, func(s *fakeServer) {
 		trustStartup(s)
 		readBatch(s, 1)
-		s.send(backend('1'), backend('2'), backend('s'), ready('I'))
+		s.send(backend('1'), backend('2'), backend('s'), backend('C', cstr("SELECT 1")), ready('I'))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,5 +219,53 @@ func TestSettingsNoticesAndNotificationsDontUpsetTheAnswerCount(t *testing.T) {
 	n, err := c.Wait(context.Background())
 	if err != nil || n.Channel != "chan" || n.Payload != "hi" {
 		t.Errorf("notification %+v, %v", n, err)
+	}
+}
+
+func TestABatchThatEndsFailedInsideATransactionItOpenedIsRolledBack(t *testing.T) {
+	var sql string
+	c, err := pipe(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 2)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("BEGIN")),
+			backend('1'), backend('2'), backend('E', cstr("SERROR"), cstr("C22012"), cstr("Mdivision by zero"), []byte{0}), ready('E'))
+		sql = s.script()
+		s.send(backend('C', cstr("ROLLBACK")), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Batch(context.Background(), Statement{SQL: "BEGIN"}, Statement{SQL: "SELECT 1/0"})
+	var be *BatchError
+	var pe *Error
+	if !errors.As(err, &be) || be.Index != 1 || !errors.As(err, &pe) {
+		t.Fatalf("got %v", err)
+	}
+	if sql != "ROLLBACK" || c.TxStatus() != 'I' || c.broken != nil {
+		t.Errorf("sent %q, status %c, broken %v", sql, c.TxStatus(), c.broken)
+	}
+}
+
+func TestTheRollbackOfAnOpenedTransactionOutlivesTheCallersDeadline(t *testing.T) {
+	c, err := pipe(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 1)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("BEGIN")), ready('T'))
+		s.script()
+		time.Sleep(300 * time.Millisecond)
+		s.send(backend('C', cstr("ROLLBACK")), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = c.Batch(ctx, Statement{SQL: "BEGIN"})
+	var be *BatchError
+	if !errors.As(err, &be) || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("got %v", err)
+	}
+	if c.TxStatus() != 'I' || c.broken != nil {
+		t.Errorf("status %c, broken %v", c.TxStatus(), c.broken)
 	}
 }

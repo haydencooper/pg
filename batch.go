@@ -25,14 +25,12 @@ func (e *BatchError) Error() string {
 }
 func (e *BatchError) Unwrap() error { return e.Err }
 
-// Batch sends every statement in one write and reads the answers in order, so a batch costs one round trip. outside
-// a transaction postgres runs the batch as one of its own: every statement applies or none does, and a setting made
-// with set_config(..., true) lasts until the batch ends. inside Tx the batch joins Tx's transaction. the first
-// statement to fail is the answer, as a *BatchError; a failure when the batch commits is blamed on its last statement.
-// those guarantees hold only when no statement begins, commits or rolls back a transaction: a batch that leaves one
-// open is rolled back and is an error. a statement that can't run in a transaction block (vacuum, create database,
-// create index concurrently) only works as the first statement, and commits at once. a batch run inside a failed
-// transaction should be only rollback or commit. every row is read into memory, so batches are for bounded results
+// Batch sends every statement in one write and reads the answers in order: one round trip. outside a transaction
+// the batch is one transaction of its own, so it applies wholly or not at all and set_config(..., true) lasts
+// until it ends; inside Tx it joins Tx's. a failure is a *BatchError naming the statement, or the last one when
+// the commit fails. a statement that begins, commits or rolls back a transaction breaks those guarantees, and a
+// batch that leaves one open is rolled back and is an error. vacuum and the like only work first. every row is
+// read into memory
 func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error) {
 	if len(stmts) == 0 {
 		return nil, nil
@@ -43,6 +41,22 @@ func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error)
 	if err := ctx.Err(); err != nil {
 		return nil, own(err)
 	}
+	started := c.tx
+	res, err := c.batch(ctx, stmts)
+	// a statement began a transaction; end it outside the batch's own deadline, so nothing it set outlives the batch
+	if started == 'I' && c.broken == nil && c.tx != 'I' {
+		if err == nil {
+			err = &BatchError{Index: len(stmts) - 1, Err: errLeftOpen}
+		}
+		if rerr := c.rollback(ctx); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+		return nil, err
+	}
+	return res, err
+}
+
+func (c *Conn) batch(ctx context.Context, stmts []Statement) ([]*Result, error) {
 	var out []byte
 	for i, st := range stmts {
 		b, err := extended(st)
@@ -152,13 +166,6 @@ func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error)
 			}
 			if rolledBack(started, results[0].Tag, stmts[0].SQL) {
 				return nil, ErrRolledBack
-			}
-			if started == 'I' && c.tx != 'I' {
-				err := errors.New("pg: the batch left a transaction open, so it was rolled back")
-				if rerr := c.rollback(ctx); rerr != nil && c.broken == nil {
-					err = errors.Join(err, rerr)
-				}
-				return nil, &BatchError{Index: len(stmts) - 1, Err: err}
 			}
 			return results, nil
 		default:
