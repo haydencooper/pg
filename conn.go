@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"slices"
 	"strconv"
@@ -429,128 +428,15 @@ func (c *Conn) Script(ctx context.Context, sql string) error {
 
 // Query runs one statement through the extended protocol, with args as $1, $2 and on, and reads every row
 func (c *Conn) Query(ctx context.Context, sql string, args ...any) (*Result, error) {
-	if c.broken != nil {
-		return nil, c.broken
+	res, err := c.Batch(ctx, Statement{SQL: sql, Args: args})
+	var be *BatchError
+	if errors.As(err, &be) {
+		return nil, be.Err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, own(err)
+	if err != nil {
+		return nil, err
 	}
-	if len(args) > math.MaxUint16 {
-		return nil, fmt.Errorf("pg: a statement takes at most %d arguments", math.MaxUint16)
-	}
-	params := make([][]byte, len(args))
-	for i, a := range args {
-		v, err := encode(a)
-		if err != nil {
-			return nil, fmt.Errorf("pg: argument %d: %w", i+1, err)
-		}
-		params[i] = v
-	}
-	defer c.watch(ctx)()
-	parse := newMsg('P')
-	parse.str("")
-	parse.str(sql)
-	parse.int16(0)
-	bind := newMsg('B')
-	bind.str("")
-	bind.str("")
-	bind.int16(0)
-	bind.int16(len(params))
-	for _, p := range params {
-		if p == nil {
-			bind.int32(-1)
-			continue
-		}
-		bind.int32(len(p))
-		bind.bytes(p)
-	}
-	bind.int16(0)
-	describe := newMsg('D')
-	describe.bytes([]byte{'P'})
-	describe.str("")
-	execute := newMsg('E')
-	execute.str("")
-	execute.int32(0)
-	var out []byte
-	for _, m := range []*msg{parse, bind, describe, execute, newMsg('S')} {
-		out = append(out, m.done()...)
-	}
-	started := c.tx
-	if err := c.send(out); err != nil {
-		return nil, c.cut(ctx, err)
-	}
-	res := &Result{}
-	var first *Error
-	for {
-		typ, body, err := c.r.next()
-		if err != nil {
-			return nil, c.lost(ctx, first, err)
-		}
-		f := fields{b: body}
-		switch typ {
-		case '1', '2', 'n', 's', 'I', 'N':
-		case 'S':
-			if err := c.param(body); err != nil {
-				return nil, c.cut(ctx, err)
-			}
-		case 'T':
-			n := f.int16()
-			if n < 0 {
-				return nil, c.cut(ctx, errors.New("pg: a row description claims a negative number of columns"))
-			}
-			res.Columns = make([]string, 0, n)
-			for i := 0; i < n && f.ok(); i++ {
-				res.Columns = append(res.Columns, f.str())
-				f.take(18)
-			}
-			if !f.ok() {
-				return nil, c.cut(ctx, errors.New("pg: a row description runs short"))
-			}
-		case 'D':
-			n := f.int16()
-			if n < 0 {
-				return nil, c.cut(ctx, errors.New("pg: a row claims a negative number of values"))
-			}
-			row := make(Row, 0, n)
-			for i := 0; i < n && f.ok(); i++ {
-				switch size := f.int32(); {
-				case size == -1:
-					row = append(row, nil)
-				case size < -1:
-					return nil, c.cut(ctx, errors.New("pg: a value claims a negative size"))
-				default:
-					row = append(row, append([]byte{}, f.take(size)...))
-				}
-			}
-			if !f.ok() {
-				return nil, c.cut(ctx, errors.New("pg: a row runs short"))
-			}
-			res.Rows = append(res.Rows, row)
-		case 'C':
-			res.Tag = f.str()
-		case 'E':
-			if first == nil {
-				first = parseError(body)
-			}
-		case 'A':
-			c.notified(body)
-		case 'Z':
-			tx, err := readyStatus(body)
-			if err != nil {
-				return nil, c.cut(ctx, err)
-			}
-			c.tx = tx
-			switch {
-			case first != nil:
-				return nil, first
-			case rolledBack(started, res.Tag, sql):
-				return nil, ErrRolledBack
-			}
-			return res, nil
-		default:
-			return nil, c.cut(ctx, unexpected(typ))
-		}
-	}
+	return res[0], nil
 }
 
 // Exec runs one statement and answers the rows it changed

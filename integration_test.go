@@ -271,3 +271,45 @@ func TestIntegrationSettingTheTimeZoneBreaksTheSession(t *testing.T) {
 		t.Errorf("after: %v", err)
 	}
 }
+func TestIntegrationABatchsTenantLastsOnlyAsLongAsTheBatch(t *testing.T) {
+	c := testConn(t, "PG_TEST_URL")
+	ctx := context.Background()
+	res, err := c.Batch(ctx,
+		Statement{SQL: "SELECT set_config('app.tenant', $1, true)", Args: []any{"alpha"}},
+		Statement{SQL: "SELECT current_setting('app.tenant')"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res[1].Rows[0][0]); got != "alpha" {
+		t.Fatalf("the second statement saw tenant %q", got)
+	}
+	after, err := c.Query(ctx, "SELECT coalesce(current_setting('app.tenant', true), '')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(after.Rows[0][0]); got != "" {
+		t.Errorf("the tenant outlived its batch: %q", got)
+	}
+}
+
+func TestIntegrationABatchAppliesWhollyOrNotAtAll(t *testing.T) {
+	c := testConn(t, "PG_TEST_URL")
+	ctx := context.Background()
+	if err := c.Script(ctx, "CREATE TEMP TABLE batched (v int)"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.Batch(ctx,
+		Statement{SQL: "INSERT INTO batched VALUES (1)"},
+		Statement{SQL: "INSERT INTO batched VALUES ($1::int)", Args: []any{"not a number"}})
+	var be *BatchError
+	if !errors.As(err, &be) || be.Index != 1 {
+		t.Fatalf("got %v, not a failure of statement 1", err)
+	}
+	res, err := c.Query(ctx, "SELECT count(*) FROM batched")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.Rows[0][0]); got != "0" {
+		t.Errorf("the first statement stayed after the second failed: %s rows", got)
+	}
+}
