@@ -99,7 +99,7 @@ func TestAServerAnsweringMoreStatementsThanTheBatchSentBreaksTheSession(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Batch(context.Background(), Statement{SQL: "SELECT 1"}); err == nil {
+	if _, err := c.Batch(context.Background(), Statement{SQL: "SELECT 1"}); err == nil || !strings.Contains(err.Error(), "answered more statements") {
 		t.Fatal("an answer to a statement never sent was taken")
 	}
 	if c.broken == nil {
@@ -127,5 +127,96 @@ func TestAnEmptyBatchSendsNothing(t *testing.T) {
 	res, err := c.Batch(context.Background())
 	if err != nil || res != nil {
 		t.Fatalf("an empty batch answered %v %v", res, err)
+	}
+}
+
+func TestACommitTimeFailureIsBlamedOnTheLastStatement(t *testing.T) {
+	c, err := pipe(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 2)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("INSERT 0 1")),
+			backend('1'), backend('2'), backend('n'), backend('C', cstr("INSERT 0 1")),
+			backend('E', cstr("SERROR"), cstr("C23503"), cstr("Mdeferred"), []byte{0}), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Batch(context.Background(), Statement{SQL: "INSERT 1"}, Statement{SQL: "INSERT 2"})
+	var be *BatchError
+	if !errors.As(err, &be) || be.Index != 1 {
+		t.Fatalf("got %v, not a failure of statement 1", err)
+	}
+}
+
+func TestAReadyBeforeEveryStatementAnsweredBreaksTheSession(t *testing.T) {
+	c, err := loopback(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 2)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("SELECT 1")), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Batch(context.Background(), Statement{SQL: "SELECT 1"}, Statement{SQL: "SELECT 2"})
+	if err == nil || !strings.Contains(err.Error(), "fewer statements") || c.broken == nil {
+		t.Fatalf("got %v, broken %v", err, c.broken)
+	}
+}
+
+func TestAPortalSuspendedBreaksTheSession(t *testing.T) {
+	c, err := loopback(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 1)
+		s.send(backend('1'), backend('2'), backend('s'), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Batch(context.Background(), Statement{SQL: "SELECT 1"}); err == nil || c.broken == nil {
+		t.Fatalf("got %v, broken %v", err, c.broken)
+	}
+}
+
+func TestABatchThatLeavesATransactionOpenIsRolledBack(t *testing.T) {
+	var sql string
+	c, err := pipe(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 2)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("SELECT 1")),
+			backend('1'), backend('2'), backend('n'), backend('C', cstr("BEGIN")), ready('T'))
+		sql = s.script()
+		s.send(backend('C', cstr("ROLLBACK")), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Batch(context.Background(), Statement{SQL: "SELECT 1"}, Statement{SQL: "BEGIN"})
+	var be *BatchError
+	if !errors.As(err, &be) || be.Index != 1 || !strings.Contains(err.Error(), "left a transaction open") {
+		t.Fatalf("got %v", err)
+	}
+	if sql != "ROLLBACK" || c.TxStatus() != 'I' || c.broken != nil {
+		t.Errorf("sent %q, status %c, broken %v", sql, c.TxStatus(), c.broken)
+	}
+}
+
+func TestSettingsNoticesAndNotificationsDontUpsetTheAnswerCount(t *testing.T) {
+	c, err := pipe(t, Config{User: "u"}, func(s *fakeServer) {
+		trustStartup(s)
+		readBatch(s, 2)
+		s.send(backend('1'), backend('2'), backend('n'), backend('C', cstr("SELECT 1")),
+			backend('S', cstr("application_name"), cstr("x")), backend('N', []byte{0}),
+			backend('A', binary.BigEndian.AppendUint32(nil, 7), cstr("chan"), cstr("hi")),
+			backend('1'), backend('2'), backend('n'), backend('C', cstr("SELECT 1")), ready('I'))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Batch(context.Background(), Statement{SQL: "SELECT 1"}, Statement{SQL: "SELECT 2"}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := c.Wait(context.Background())
+	if err != nil || n.Channel != "chan" || n.Payload != "hi" {
+		t.Errorf("notification %+v, %v", n, err)
 	}
 }

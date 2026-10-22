@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Statement is one statement of a batch, with its arguments as $1, $2 and on
@@ -20,14 +21,18 @@ type BatchError struct {
 }
 
 func (e *BatchError) Error() string {
-	return fmt.Sprintf("pg: statement %d of the batch: %v", e.Index, e.Err)
+	return fmt.Sprintf("pg: statement %d of the batch: ", e.Index) + strings.TrimPrefix(e.Err.Error(), "pg: ")
 }
 func (e *BatchError) Unwrap() error { return e.Err }
 
 // Batch sends every statement in one write and reads the answers in order, so a batch costs one round trip. outside
 // a transaction postgres runs the batch as one of its own: every statement applies or none does, and a setting made
 // with set_config(..., true) lasts until the batch ends. inside Tx the batch joins Tx's transaction. the first
-// statement to fail is the answer, as a *BatchError
+// statement to fail is the answer, as a *BatchError; a failure when the batch commits is blamed on its last statement.
+// those guarantees hold only when no statement begins, commits or rolls back a transaction: a batch that leaves one
+// open is rolled back and is an error. a statement that can't run in a transaction block (vacuum, create database,
+// create index concurrently) only works as the first statement, and commits at once. a batch run inside a failed
+// transaction should be only rollback or commit. every row is read into memory, so batches are for bounded results
 func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error) {
 	if len(stmts) == 0 {
 		return nil, nil
@@ -72,7 +77,7 @@ func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error)
 		}
 		f := fields{b: body}
 		switch typ {
-		case '1', '2', 'n', 's', 'N':
+		case '1', '2', 'n', 'N':
 		case 'S':
 			if err := c.param(body); err != nil {
 				return nil, c.cut(ctx, err)
@@ -129,7 +134,7 @@ func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error)
 			at++
 		case 'E':
 			if first == nil {
-				first, failed = parseError(body), at
+				first, failed = parseError(body), min(at, len(stmts)-1)
 			}
 		case 'A':
 			c.notified(body)
@@ -142,10 +147,18 @@ func (c *Conn) Batch(ctx context.Context, stmts ...Statement) ([]*Result, error)
 			if first != nil {
 				return nil, &BatchError{Index: failed, Err: first}
 			}
-			for i, st := range stmts {
-				if rolledBack(started, results[i].Tag, st.SQL) {
-					return nil, ErrRolledBack
+			if at != len(results) {
+				return nil, c.cut(ctx, errors.New("pg: the server answered fewer statements than the batch sent"))
+			}
+			if rolledBack(started, results[0].Tag, stmts[0].SQL) {
+				return nil, ErrRolledBack
+			}
+			if started == 'I' && c.tx != 'I' {
+				err := errors.New("pg: the batch left a transaction open, so it was rolled back")
+				if rerr := c.rollback(ctx); rerr != nil && c.broken == nil {
+					err = errors.Join(err, rerr)
 				}
+				return nil, &BatchError{Index: len(stmts) - 1, Err: err}
 			}
 			return results, nil
 		default:

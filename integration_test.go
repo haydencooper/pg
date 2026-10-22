@@ -313,3 +313,25 @@ func TestIntegrationABatchAppliesWhollyOrNotAtAll(t *testing.T) {
 		t.Errorf("the first statement stayed after the second failed: %s rows", got)
 	}
 }
+
+func TestIntegrationABatchThatLeavesATransactionOpenIsRolledBack(t *testing.T) {
+	c := testConn(t, "PG_TEST_URL")
+	ctx := context.Background()
+	_, err := c.Batch(ctx,
+		Statement{SQL: "SELECT set_config('app.tenant', 'alpha', true)"},
+		Statement{SQL: "BEGIN"},
+		Statement{SQL: "SELECT 1"})
+	if err == nil {
+		t.Fatal("a batch that left a transaction open succeeded")
+	}
+	if c.TxStatus() != 'I' {
+		t.Errorf("the session was left in transaction state %c", c.TxStatus())
+	}
+	res, qerr := c.Query(ctx, "SELECT coalesce(current_setting('app.tenant', true), '')")
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
+	if got := string(res.Rows[0][0]); got != "" {
+		t.Errorf("the tenant leaked: %q", got)
+	}
+}
