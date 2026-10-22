@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"os"
 	"strings"
@@ -356,5 +357,35 @@ func TestIntegrationABatchThatOpensATransactionAndFailsIsRolledBack(t *testing.T
 	}
 	if got := string(res.Rows[0][0]); got != "" {
 		t.Errorf("the tenant leaked: %q", got)
+	}
+}
+func TestIntegrationATLSSessionIsEncrypted(t *testing.T) {
+	c := testConn(t, "PG_TEST_TLS_URL")
+	res, err := c.Query(context.Background(), "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.Rows[0][0]); got != "t" {
+		t.Errorf("the session isn't encrypted: ssl=%s", got)
+	}
+}
+
+func TestIntegrationATLSSessionChecksTheHostItDialed(t *testing.T) {
+	u := os.Getenv("PG_TEST_TLS_URL")
+	if u == "" {
+		t.Skip("PG_TEST_TLS_URL is not set")
+	}
+	cfg, err := ParseURL(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the certificate names localhost only
+	cfg.Host = "127.0.0.1"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = Connect(ctx, cfg)
+	var host x509.HostnameError
+	if !errors.As(err, &host) {
+		t.Fatalf("got %v, not a host name failure", err)
 	}
 }

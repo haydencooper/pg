@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/haydencooper/pg/internal/testcerts"
 )
 
 func TestAURLGivesItsHostPortUserPasswordAndDatabase(t *testing.T) {
@@ -103,4 +106,51 @@ func TestAConfigMarshalsAndLogsWithoutItsPassword(t *testing.T) {
 	slog.New(slog.NewTextHandler(&text, nil)).Info("connect", "cfg", c)
 	slog.New(slog.NewJSONHandler(&js, nil)).Info("connect", "cfg", c)
 	hidesThePassword(t, []string{string(j), text.String(), js.String()})
+}
+
+func TestTheURLsTLSSettings(t *testing.T) {
+	dir := t.TempDir()
+	set, err := testcerts.New("localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	ca := filepath.ToSlash(filepath.Join(dir, "ca.crt"))
+	cases := []struct {
+		url  string
+		mode TLSMode
+		bad  string
+	}{
+		{url: "postgres://u@db.example/d", mode: TLSVerifyFull},
+		{url: "postgres://u@/d?host=/var/run/postgresql", mode: TLSOff},
+		{url: "postgres://u@db.example/d?sslmode=disable", mode: TLSOff},
+		{url: "postgres://u@db.example/d?sslmode=verify-full&sslrootcert=" + ca, mode: TLSVerifyFull},
+		{url: "postgres://u@db.example/d?sslmode=require", bad: "sslmode must be disable or verify-full"},
+		{url: "postgres://u@db.example/d?sslmode=prefer", bad: "sslmode must be disable or verify-full"},
+		{url: "postgres://u@/d?host=/var/run/postgresql&sslmode=verify-full", bad: "unix socket"},
+		{url: "postgres://u@db.example/d?sslrootcert=" + filepath.ToSlash(filepath.Join(dir, "missing.crt")), bad: "can't be read"},
+		{url: "postgres://u@db.example/d?sslrootcert=" + filepath.ToSlash(filepath.Join(dir, "server.key")), bad: "holds no certificate"},
+	}
+	for _, c := range cases {
+		cfg, err := ParseURL(c.url)
+		if c.bad != "" {
+			if err == nil || !strings.Contains(err.Error(), c.bad) {
+				t.Errorf("%s: got %v, want an error about %q", c.url, err, c.bad)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.url, err)
+			continue
+		}
+		if cfg.mode() != c.mode {
+			t.Errorf("%s: mode %v, want %v", c.url, cfg.mode(), c.mode)
+		}
+	}
+	cfg, _ := ParseURL("postgres://u@db.example/d?sslmode=verify-full&sslrootcert=" + ca)
+	if cfg.RootCAs == nil {
+		t.Error("sslrootcert set no roots")
+	}
 }

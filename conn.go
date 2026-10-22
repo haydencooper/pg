@@ -67,8 +67,9 @@ var ErrCommitUnknown = errors.New("pg: the commit's outcome is unknown")
 
 var errWorkEnded = errors.New("pg: the work ended the transaction itself")
 
-// Connect dials the database and authenticates with trust, md5 or scram-sha-256. a cleartext password is refused,
-// since it would cross the wire as it is
+// Connect dials the database, asks for tls when the config's mode needs it, and authenticates. over tls it speaks
+// only scram-sha-256-plus, bound to the server's certificate; in the clear it takes trust, md5 or scram-sha-256. a
+// cleartext password is refused, since it would cross the wire as it is
 func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
@@ -78,6 +79,14 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	nc, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("pg: %w", err)
+	}
+	if cfg.mode() == TLSVerifyFull {
+		tc, err := secure(ctx, nc, cfg)
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+		nc = tc
 	}
 	return startup(ctx, nc, cfg)
 }
