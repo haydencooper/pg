@@ -12,7 +12,12 @@ trap 'run pg_ctl -D "$dir/data" -m immediate stop > /dev/null 2>&1 || true; rm -
 run initdb -D "$dir/data" -U pgt_admin --auth=trust -E UTF8 --no-locale > /dev/null
 # the admin needs no password from this host; every test user needs its own
 printf 'host all pgt_admin 127.0.0.1/32 trust\nhost all all 127.0.0.1/32 md5\n' > "$dir/data/pg_hba.conf"
-run pg_ctl -D "$dir/data" -o "-p $port -c listen_addresses=127.0.0.1" -l "$dir/log" -w start > /dev/null \
+# some builds default the socket to a directory the user can't write
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) sock="" ;;
+  *) sock=" -c unix_socket_directories=$dir" ;;
+esac
+run pg_ctl -D "$dir/data" -o "-p $port -c listen_addresses=127.0.0.1$sock" -l "$dir/log" -w start > /dev/null \
   || { cat "$dir/log" >&2; exit 1; }
 run psql -h 127.0.0.1 -p "$port" -U pgt_admin -d postgres -X -q -v ON_ERROR_STOP=1 <<'SQL'
 SET password_encryption = 'scram-sha-256';
