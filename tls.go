@@ -2,10 +2,14 @@ package pg
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net"
 	"time"
@@ -48,4 +52,23 @@ func handshake(ctx context.Context, nc net.Conn, cfg Config) (*tls.Conn, error) 
 		return nil, fmt.Errorf("pg: %w", err)
 	}
 	return tc, nil
+}
+
+// endPoint is the tls-server-end-point channel binding (rfc 5929): the server certificate's hash, by the hash its
+// signature uses, with md5 and sha-1 raised to sha-256. a signature with no hash of its own, as ed25519's, has none
+func endPoint(cert *x509.Certificate) ([]byte, error) {
+	var h hash.Hash
+	switch cert.SignatureAlgorithm {
+	case x509.MD5WithRSA, x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1,
+		x509.SHA256WithRSA, x509.SHA256WithRSAPSS, x509.DSAWithSHA256, x509.ECDSAWithSHA256:
+		h = sha256.New()
+	case x509.SHA384WithRSA, x509.SHA384WithRSAPSS, x509.ECDSAWithSHA384:
+		h = sha512.New384()
+	case x509.SHA512WithRSA, x509.SHA512WithRSAPSS, x509.ECDSAWithSHA512:
+		h = sha512.New()
+	default:
+		return nil, errors.New("pg: the server's certificate is signed in a way channel binding can't name")
+	}
+	h.Write(cert.Raw)
+	return h.Sum(nil), nil
 }

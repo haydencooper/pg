@@ -3,8 +3,10 @@ package pg
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -231,5 +233,105 @@ func TestTLSModesMarshalAsText(t *testing.T) {
 	}
 	if _, err := TLSMode(3).MarshalText(); err == nil {
 		t.Error("an unknown mode marshaled")
+	}
+}
+
+// saslStart reads the client's first scram message: the mechanism it chose and its client-first
+func saslStart(s *fakeServer) (mech, first string) {
+	_, body := s.read(false)
+	f := fields{b: body}
+	mech = f.str()
+	n := f.int32()
+	return mech, string(f.take(n))
+}
+
+func saslOffer(mechs ...string) []byte {
+	b := binary.BigEndian.AppendUint32(nil, 10)
+	for _, m := range mechs {
+		b = append(b, cstr(m)...)
+	}
+	return backend('R', append(b, 0))
+}
+
+func saslContinue(msg string) []byte {
+	return backend('R', append(binary.BigEndian.AppendUint32(nil, 11), msg...))
+}
+
+func TestOverTLSScramIsBoundToTheServersCertificate(t *testing.T) {
+	var mech, first, final string
+	cfg, leaf := tlsServer(t, 'S', []string{"localhost"}, nil, func(s *fakeServer) {
+		s.read(true)
+		s.send(saslOffer("SCRAM-SHA-256-PLUS", "SCRAM-SHA-256"))
+		mech, first = saslStart(s)
+		nonce := scramAttrs(strings.TrimPrefix(first, "p=tls-server-end-point,,n=,"))["r"]
+		s.send(saslContinue("r=" + nonce + "server,s=c2FsdA==,i=4096"))
+		_, body := s.read(false)
+		final = string(body)
+		s.send(backend('E', cstr("SFATAL"), cstr("C28P01"), cstr("Mstop here"), []byte{0}))
+	})
+	_, err := connectSoon(cfg)
+	if err == nil {
+		t.Fatal("the session went on past the server's error")
+	}
+	if mech != "SCRAM-SHA-256-PLUS" {
+		t.Errorf("over tls the client chose %q", mech)
+	}
+	if !strings.HasPrefix(first, "p=tls-server-end-point,,") {
+		t.Errorf("the client-first doesn't bind to the channel: %q", first)
+	}
+	sum := sha256.Sum256(leaf.Raw)
+	want := "c=" + base64.StdEncoding.EncodeToString(append([]byte("p=tls-server-end-point,,"), sum[:]...))
+	if !strings.HasPrefix(final, want+",") {
+		t.Errorf("the client-final's channel binding is %q, want %q", final, want)
+	}
+}
+
+func TestOverTLSAServerOfferingOnlyUnboundScramIsRefused(t *testing.T) {
+	cfg, _ := tlsServer(t, 'S', []string{"localhost"}, nil, func(s *fakeServer) {
+		s.read(true)
+		s.send(saslOffer("SCRAM-SHA-256"))
+	})
+	_, err := connectSoon(cfg)
+	if err == nil || !strings.Contains(err.Error(), "SCRAM-SHA-256-PLUS") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestOverTLSMd5IsRefused(t *testing.T) {
+	cfg, _ := tlsServer(t, 'S', []string{"localhost"}, nil, func(s *fakeServer) {
+		s.read(true)
+		s.send(backend('R', []byte{0, 0, 0, 5, 1, 2, 3, 4}))
+	})
+	_, err := connectSoon(cfg)
+	if err == nil || !strings.Contains(err.Error(), "channel binding") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestOverTLSASessionLetInWithoutScramIsRefused(t *testing.T) {
+	cfg, _ := tlsServer(t, 'S', []string{"localhost"}, nil, func(s *fakeServer) {
+		s.read(true)
+		s.send(authOK())
+	})
+	_, err := connectSoon(cfg)
+	if err == nil || !strings.Contains(err.Error(), "channel binding") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTheBindingHashFollowsTheCertificatesSignature(t *testing.T) {
+	set, err := testcerts.New("localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := endPoint(set.Leaf)
+	sum := sha256.Sum256(set.Leaf.Raw)
+	if err != nil || string(got) != string(sum[:]) {
+		t.Errorf("an ecdsa-sha256 certificate binds as %x %v", got, err)
+	}
+	ed := *set.Leaf
+	ed.SignatureAlgorithm = x509.PureEd25519
+	if _, err := endPoint(&ed); err == nil {
+		t.Error("an ed25519 certificate, which has no binding hash, was given one")
 	}
 }

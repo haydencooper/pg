@@ -108,7 +108,7 @@ func play(t *testing.T, client, server net.Conn, cfg Config, serve func(*fakeSer
 		client.Close()
 		<-done
 	})
-	return startup(context.Background(), client, cfg)
+	return startup(context.Background(), client, cfg, nil)
 }
 
 // trustStartup reports the session settings as postgres does

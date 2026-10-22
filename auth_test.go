@@ -56,7 +56,7 @@ func TestScramRefusesMoreIterationsThanItRuns(t *testing.T) {
 
 // postgres takes the user from the startup message, so its scram user is empty
 func TestAPostgresScramNonceIsFreshAndItsUserEmpty(t *testing.T) {
-	a, b := newScram("pw"), newScram("pw")
+	a, b := newScram("pw", nil), newScram("pw", nil)
 	if a.nonce == b.nonce || len(a.nonce) < 24 {
 		t.Errorf("nonces %q %q", a.nonce, b.nonce)
 	}
@@ -69,5 +69,16 @@ func TestMd5IsTheHashOfTheHashWithTheSalt(t *testing.T) {
 	// md5(md5("secret" + "app") + salt)
 	if got := md5Password("app", "secret", []byte{1, 2, 3, 4}); got != "md5911f527656472583a006e7727877b33e" {
 		t.Errorf("%s", got)
+	}
+}
+
+func TestUnboundScramStillSaysItIsntBound(t *testing.T) {
+	s := newScram("pencil", nil)
+	if first := s.first(); !strings.HasPrefix(first, "n,,") {
+		t.Fatalf("client-first %q", first)
+	}
+	final, err := s.final("r=" + s.nonce + "srv,s=c2FsdA==,i=4096")
+	if err != nil || !strings.HasPrefix(final, "c=biws,") {
+		t.Fatalf("client-final %q %v", final, err)
 	}
 }

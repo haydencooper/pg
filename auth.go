@@ -23,26 +23,36 @@ func md5Password(user, password string, salt []byte) string {
 // its deadline
 const maxScramIterations = 1 << 20
 
-// scram is one scram-sha-256 exchange (rfc 5802 and 7677) without channel binding. the password is used as it is:
-// saslprep leaves ascii alone, and the passwords sent here are ascii
+// scram is one scram-sha-256 exchange (rfc 5802 and 7677), bound to the tls channel when binding is set
+// (scram-sha-256-plus, rfc 5929's tls-server-end-point). the password is used as it is: saslprep leaves ascii alone,
+// and the passwords sent here are ascii
 type scram struct {
 	user, password, nonce string
+	binding               []byte
 	clientFirstBare       string
 	authMessage           string
 	saltedPassword        []byte
 }
 
-func newScram(password string) *scram {
+func newScram(password string, binding []byte) *scram {
 	b := make([]byte, 18)
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
-	return &scram{password: password, nonce: base64.StdEncoding.EncodeToString(b)}
+	return &scram{password: password, binding: binding, nonce: base64.StdEncoding.EncodeToString(b)}
+}
+
+// header is the gs2 header: bound to the tls channel, or not bound at all
+func (s *scram) header() string {
+	if s.binding != nil {
+		return "p=tls-server-end-point,,"
+	}
+	return "n,,"
 }
 
 func (s *scram) first() string {
 	s.clientFirstBare = "n=" + s.user + ",r=" + s.nonce
-	return "n,," + s.clientFirstBare
+	return s.header() + s.clientFirstBare
 }
 
 func (s *scram) final(serverFirst string) (string, error) {
@@ -63,7 +73,8 @@ func (s *scram) final(serverFirst string) (string, error) {
 		return "", errors.New("pg: the server asks for more scram iterations than this client runs")
 	}
 	s.saltedPassword = pbkdf2SHA256([]byte(s.password), salt, n)
-	withoutProof := "c=biws,r=" + nonce
+	// the channel binding is the header and the certificate's hash; unbound, it's base64 of "n,,", which is biws
+	withoutProof := "c=" + base64.StdEncoding.EncodeToString(append([]byte(s.header()), s.binding...)) + ",r=" + nonce
 	s.authMessage = s.clientFirstBare + "," + serverFirst + "," + withoutProof
 	clientKey := hmacSHA256(s.saltedPassword, "Client Key")
 	stored := sha256.Sum256(clientKey)

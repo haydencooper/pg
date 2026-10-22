@@ -3,6 +3,7 @@ package pg
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -80,6 +81,7 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pg: %w", err)
 	}
+	var bind []byte
 	switch cfg.mode() {
 	case TLSOff:
 	case TLSVerifyFull:
@@ -88,24 +90,39 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 			nc.Close()
 			return nil, err
 		}
+		if bind, err = bindingOf(tc); err != nil {
+			tc.Close()
+			return nil, err
+		}
 		nc = tc
 	default:
 		nc.Close()
 		return nil, errUnknownTLS
 	}
-	return startup(ctx, nc, cfg)
+	return startup(ctx, nc, cfg, bind)
 }
 
-func startup(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
+// bindingOf is the channel binding of a finished handshake, from the certificate the server showed
+func bindingOf(tc *tls.Conn) ([]byte, error) {
+	certs := tc.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil, errors.New("pg: the server showed no certificate")
+	}
+	return endPoint(certs[0])
+}
+
+// startup authenticates on nc. a non-nil bind is the tls channel binding: the session then takes only scram bound
+// to it
+func startup(ctx context.Context, nc net.Conn, cfg Config, bind []byte) (*Conn, error) {
 	c := &Conn{nc: nc, r: reader{r: bufio.NewReader(nc)}, w: bufio.NewWriter(nc), params: map[string]string{}}
-	if err := c.start(ctx, cfg); err != nil {
+	if err := c.start(ctx, cfg, bind); err != nil {
 		nc.Close()
 		return nil, err
 	}
 	return c, nil
 }
 
-func (c *Conn) start(ctx context.Context, cfg Config) error {
+func (c *Conn) start(ctx context.Context, cfg Config, bind []byte) error {
 	defer c.watch(ctx)()
 	m := newMsg(0)
 	m.int32(196608)
@@ -144,9 +161,16 @@ func (c *Conn) start(ctx context.Context, cfg Config) error {
 				if sc != nil && !verified {
 					return errors.New("pg: the server ended scram without its signature")
 				}
+				// over tls, only scram bound to the channel proves no one sits in the middle
+				if bind != nil && sc == nil {
+					return errors.New("pg: over tls the server must use scram with channel binding, and it let the session in without")
+				}
 			case 3:
 				return errors.New("pg: the server asks for the password in cleartext, which this client refuses")
 			case 5:
+				if bind != nil {
+					return errors.New("pg: over tls the server must use scram with channel binding, and it asked for md5")
+				}
 				salt := f.take(4)
 				if !f.ok() {
 					return errors.New("pg: the server's md5 request has no salt")
@@ -165,13 +189,17 @@ func (c *Conn) start(ctx context.Context, cfg Config) error {
 					}
 					mechs = append(mechs, s)
 				}
-				if !slices.Contains(mechs, "SCRAM-SHA-256") {
-					return fmt.Errorf("pg: the server offers %v; only SCRAM-SHA-256 is spoken here", mechs)
+				mech := "SCRAM-SHA-256"
+				if bind != nil {
+					mech = "SCRAM-SHA-256-PLUS"
 				}
-				sc = newScram(cfg.Password)
+				if !slices.Contains(mechs, mech) {
+					return fmt.Errorf("pg: the server offers %v; this session speaks only %s", mechs, mech)
+				}
+				sc = newScram(cfg.Password, bind)
 				first := sc.first()
 				p := newMsg('p')
-				p.str("SCRAM-SHA-256")
+				p.str(mech)
 				p.int32(len(first))
 				p.bytes([]byte(first))
 				if err := c.send(p.done()); err != nil {
