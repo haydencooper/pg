@@ -276,6 +276,9 @@ func (c *Conn) Param(name string) string { return c.params[name] }
 // TxStatus is the server's transaction status after the last statement: I idle, T in a transaction, E in a failed one
 func (c *Conn) TxStatus() byte { return c.tx }
 
+// Err is why the session can't be used any more, or nil while it can; a pool drops a session once it has one
+func (c *Conn) Err() error { return c.broken }
+
 // Close ends the session. closing one that's broken or closed already does nothing
 func (c *Conn) Close() error {
 	if c.broken != nil {

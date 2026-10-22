@@ -34,6 +34,8 @@ the url may set `host` (a unix socket's directory), `application_name`, `sslmode
 
 a batch goes out in one write and comes back in one round trip. outside a transaction postgres runs it as one of its own: every statement applies or none does, and `set_config(..., true)` lasts until the batch ends, as long as no statement in it begins, commits or rolls back a transaction. a batch that leaves a transaction open is rolled back and is an error, so a tenant set in it can't leak into the session's next use. the first statement to fail is a `*pg.BatchError` naming it; a failure when the batch commits is blamed on its last statement. every row is read into memory, so batches are for bounded results.
 
+`Err` says why a session can't be used any more (it was closed, cut by a cancelled context, or broken by the server), and is nil while it can; a pool drops a session once it has one.
+
 ## tests
 
     go test ./...

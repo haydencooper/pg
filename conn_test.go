@@ -338,6 +338,9 @@ func TestACancelledQueryBreaksTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer close(release)
+	if c.Err() != nil {
+		t.Fatalf("a fresh session: %v", c.Err())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if _, err := c.Query(ctx, "SELECT pg_sleep(10)"); !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "pg: ") {
@@ -347,7 +350,24 @@ func TestACancelledQueryBreaksTheSession(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "broken") || strings.Count(err.Error(), "pg:") != 1 {
 		t.Fatalf("after a cut: %v", err)
 	}
+	if c.Err() == nil || !strings.Contains(c.Err().Error(), "broken") {
+		t.Fatalf("Err after a cut: %v", c.Err())
+	}
 	c.Close()
+}
+
+func TestAClosedSessionSaysSo(t *testing.T) {
+	c, err := pipe(t, Config{User: "app", Database: "stats"}, func(s *fakeServer) {
+		trustStartup(s)
+		s.read(false)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	if c.Err() == nil || !strings.Contains(c.Err().Error(), "closed") {
+		t.Fatalf("%v", c.Err())
+	}
 }
 
 func TestATransactionRollsBackWhenItsWorkFails(t *testing.T) {
