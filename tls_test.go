@@ -2,8 +2,10 @@ package pg
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -33,10 +35,18 @@ func tlsServerMax(t *testing.T, answer byte, hosts []string, extra []byte, max u
 	if err != nil {
 		t.Fatal(err)
 	}
+	return tlsServerFor(t, set, answer, extra, max, serve)
+}
+
+// tlsServerFor is tlsServerMax with the certificates given. the server sends its authority after the leaf, as
+// servers do, so a client that binds to the wrong certificate in the chain is caught
+func tlsServerFor(t *testing.T, set *testcerts.Set, answer byte, extra []byte, max uint16, serve func(*fakeServer)) (Config, *x509.Certificate) {
+	t.Helper()
 	pair, err := tls.X509KeyPair(set.CertPEM, set.KeyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pair.Certificate = append(pair.Certificate, set.CADER)
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(set.CAPEM)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -324,14 +334,109 @@ func TestTheBindingHashFollowsTheCertificatesSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := endPoint(set.Leaf)
-	sum := sha256.Sum256(set.Leaf.Raw)
-	if err != nil || string(got) != string(sum[:]) {
-		t.Errorf("an ecdsa-sha256 certificate binds as %x %v", got, err)
+	raw := set.Leaf.Raw
+	s256, s384, s512 := sha256.Sum256(raw), sha512.Sum384(raw), sha512.Sum512(raw)
+	for alg, want := range map[x509.SignatureAlgorithm][]byte{
+		x509.MD5WithRSA: s256[:], x509.SHA1WithRSA: s256[:], x509.ECDSAWithSHA1: s256[:],
+		x509.SHA256WithRSA: s256[:], x509.ECDSAWithSHA256: s256[:],
+		x509.SHA384WithRSA: s384[:], x509.SHA384WithRSAPSS: s384[:], x509.ECDSAWithSHA384: s384[:],
+		x509.SHA512WithRSA: s512[:], x509.SHA512WithRSAPSS: s512[:], x509.ECDSAWithSHA512: s512[:],
+	} {
+		c := *set.Leaf
+		c.SignatureAlgorithm = alg
+		got, err := endPoint(&c)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("%v binds as %x %v, want %x", alg, got, err, want)
+		}
 	}
 	ed := *set.Leaf
 	ed.SignatureAlgorithm = x509.PureEd25519
-	if _, err := endPoint(&ed); err == nil {
-		t.Error("an ed25519 certificate, which has no binding hash, was given one")
+	if _, err := endPoint(&ed); err == nil || !strings.Contains(err.Error(), "Ed25519") {
+		t.Errorf("an ed25519 certificate, which has no binding hash, got %v", err)
+	}
+}
+
+func TestAnEd25519CertificateFailsTheConnectBeforeAnythingIsSent(t *testing.T) {
+	set, err := testcerts.NewEd25519("localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan int, 1)
+	cfg, _ := tlsServerFor(t, set, 'S', nil, 0, func(s *fakeServer) {
+		n, _ := s.nc.Read(make([]byte, 1))
+		read <- n
+	})
+	_, err = connectSoon(cfg)
+	if err == nil || !strings.Contains(err.Error(), "channel binding can't name") {
+		t.Fatalf("got %v", err)
+	}
+	select {
+	case n := <-read:
+		if n != 0 {
+			t.Error("the client sent a startup message to a server it couldn't bind to")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never saw the session end")
+	}
+}
+
+func TestOverTLSAServersSignatureIsCheckedAgainstTheBoundExchange(t *testing.T) {
+	var leaf *x509.Certificate
+	serve := func(good bool) func(*fakeServer) {
+		return func(s *fakeServer) {
+			s.read(true)
+			s.send(saslOffer("SCRAM-SHA-256-PLUS"))
+			_, first := saslStart(s)
+			bare := strings.TrimPrefix(first, "p=tls-server-end-point,,")
+			nonce := scramAttrs(bare)["r"] + "server"
+			serverFirst := "r=" + nonce + ",s=c2FsdA==,i=4096"
+			s.send(saslContinue(serverFirst))
+			_, body := s.read(false)
+			sum := sha256.Sum256(leaf.Raw)
+			c := base64.StdEncoding.EncodeToString(append([]byte("p=tls-server-end-point,,"), sum[:]...))
+			authMessage := bare + "," + serverFirst + ",c=" + c + ",r=" + nonce
+			if !strings.HasPrefix(string(body), "c="+c+",r="+nonce+",p=") {
+				s.t.Errorf("client-final %q", body)
+			}
+			sig := make([]byte, 32)
+			if good {
+				salted := pbkdf2SHA256([]byte("p"), []byte("salt"), 4096)
+				sig = hmacSHA256(hmacSHA256(salted, "Server Key"), authMessage)
+			}
+			s.send(backend('R', append(binary.BigEndian.AppendUint32(nil, 12), "v="+base64.StdEncoding.EncodeToString(sig)...)))
+			if good {
+				s.send(authOK(), ready('I'))
+			}
+		}
+	}
+	for _, good := range []bool{false, true} {
+		var cfg Config
+		cfg, leaf = tlsServer(t, 'S', []string{"localhost"}, nil, serve(good))
+		c, err := connectSoon(cfg)
+		switch {
+		case good && err != nil:
+			t.Errorf("a server that signed the bound exchange was refused: %v", err)
+		case !good && (err == nil || !strings.Contains(err.Error(), "doesn't check out")):
+			t.Errorf("a wrong signature got %v", err)
+		}
+		if c != nil {
+			c.Close()
+		}
+	}
+}
+
+func TestInTheClearPlusIsNeverChosenEvenWhenOffered(t *testing.T) {
+	var mech, first string
+	_, err := pipe(t, Config{User: "u", Password: "p"}, func(s *fakeServer) {
+		s.read(true)
+		s.send(saslOffer("SCRAM-SHA-256-PLUS", "SCRAM-SHA-256"))
+		mech, first = saslStart(s)
+		s.send(backend('E', cstr("SFATAL"), cstr("C28P01"), cstr("Mstop here"), []byte{0}))
+	})
+	if err == nil {
+		t.Fatal("the session went on past the server's error")
+	}
+	if mech != "SCRAM-SHA-256" || !strings.HasPrefix(first, "n,,") {
+		t.Errorf("in the clear the client sent %q %q", mech, first)
 	}
 }

@@ -91,7 +91,7 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 			return nil, err
 		}
 		if bind, err = bindingOf(tc); err != nil {
-			tc.Close()
+			nc.Close()
 			return nil, err
 		}
 		nc = tc

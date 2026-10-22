@@ -82,3 +82,22 @@ func TestUnboundScramStillSaysItIsntBound(t *testing.T) {
 		t.Fatalf("client-final %q %v", final, err)
 	}
 }
+
+func TestAServerFirstWithAMandatoryExtensionIsRefused(t *testing.T) {
+	s := newScram("pencil", nil)
+	s.first()
+	if _, err := s.final("m=ext,r=" + s.nonce + "srv,s=c2FsdA==,i=4096"); err == nil || !strings.Contains(err.Error(), "extension") {
+		t.Errorf("%v", err)
+	}
+}
+
+func TestAServerFinalWithAnErrorSaysWhatTheServerRefused(t *testing.T) {
+	s := newScram("pencil", nil)
+	s.first()
+	if _, err := s.final("r=" + s.nonce + "srv,s=c2FsdA==,i=4096"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.verify("e=invalid-proof"); err == nil || !strings.Contains(err.Error(), "refused scram: invalid-proof") {
+		t.Errorf("%v", err)
+	}
+}

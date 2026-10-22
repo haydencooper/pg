@@ -3,7 +3,9 @@
 package testcerts
 
 import (
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
@@ -20,16 +22,30 @@ import (
 // Set is an authority and one server certificate it signed, in pem, with the certificate parsed
 type Set struct {
 	CAPEM, CertPEM, KeyPEM []byte
+	CADER                  []byte
 	Leaf                   *x509.Certificate
 }
 
 // New makes an authority and a server certificate for hosts, names and addresses alike, good for a day
-func New(hosts ...string) (*Set, error) {
+func New(hosts ...string) (*Set, error) { return build(false, hosts) }
+
+// NewEd25519 is New with ed25519 keys, so the leaf's signature is ed25519, which has no hash of its own
+func NewEd25519(hosts ...string) (*Set, error) { return build(true, hosts) }
+
+func newKey(ed bool) (crypto.Signer, error) {
+	if ed {
+		_, k, err := ed25519.GenerateKey(rand.Reader)
+		return k, err
+	}
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+}
+
+func build(ed bool, hosts []string) (*Set, error) {
 	if len(hosts) == 0 {
 		return nil, errors.New("testcerts: a certificate needs a host")
 	}
 	now := time.Now()
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caKey, err := newKey(ed)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +54,7 @@ func New(hosts ...string) (*Set, error) {
 		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
 		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
 	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, caKey.Public(), caKey)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +62,7 @@ func New(hosts ...string) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := newKey(ed)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +78,7 @@ func New(hosts ...string) (*Set, error) {
 			tmpl.DNSNames = append(tmpl.DNSNames, h)
 		}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, key.Public(), caKey)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +94,7 @@ func New(hosts ...string) (*Set, error) {
 		CAPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
 		CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+		CADER:   caDER,
 		Leaf:    leaf,
 	}, nil
 }

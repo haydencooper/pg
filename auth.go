@@ -57,6 +57,9 @@ func (s *scram) first() string {
 
 func (s *scram) final(serverFirst string) (string, error) {
 	attrs := scramAttrs(serverFirst)
+	if _, ok := attrs["m"]; ok {
+		return "", errors.New("pg: the server requires a scram extension this client doesn't speak")
+	}
 	nonce, salt64, iter := attrs["r"], attrs["s"], attrs["i"]
 	if !strings.HasPrefix(nonce, s.nonce) || len(nonce) == len(s.nonce) {
 		return "", errors.New("pg: the server's scram nonce doesn't extend ours")
@@ -87,7 +90,11 @@ func (s *scram) final(serverFirst string) (string, error) {
 
 // verify checks the server's signature, so a server that doesn't know the password can't pass as one that does
 func (s *scram) verify(serverFinal string) error {
-	got, err := base64.StdEncoding.DecodeString(scramAttrs(serverFinal)["v"])
+	attrs := scramAttrs(serverFinal)
+	if e, ok := attrs["e"]; ok {
+		return errors.New("pg: the server refused scram: " + e)
+	}
+	got, err := base64.StdEncoding.DecodeString(attrs["v"])
 	if err != nil || s.saltedPassword == nil {
 		return errors.New("pg: the server's scram signature doesn't decode")
 	}

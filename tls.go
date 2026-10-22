@@ -67,7 +67,7 @@ func endPoint(cert *x509.Certificate) ([]byte, error) {
 	case x509.SHA512WithRSA, x509.SHA512WithRSAPSS, x509.ECDSAWithSHA512:
 		h = sha512.New()
 	default:
-		return nil, errors.New("pg: the server's certificate is signed in a way channel binding can't name")
+		return nil, errors.New("pg: the server's certificate is signed in a way channel binding can't name (" + cert.SignatureAlgorithm.String() + ")")
 	}
 	h.Write(cert.Raw)
 	return h.Sum(nil), nil
